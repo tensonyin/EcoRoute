@@ -187,7 +187,7 @@ def get_local_model():
     if llm is not None:
         return llm
         
-    model_path = os.environ.get("LOCAL_MODEL_PATH", "model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+    model_path = os.environ.get("LOCAL_MODEL_PATH", "model/gemma-4-E2B-it-Q4_K_M.gguf")
     if not os.path.exists(model_path):
         sys.stderr.write(f"Local model not found at {model_path}. Fallback to Fireworks.\n")
         sys.stderr.flush()
@@ -216,13 +216,30 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
     if local_llm is None:
         raise RuntimeError("Local model is not available")
         
-    formatted_prompt = (
-        f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
-        f"<|im_start|>user\n{prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
+    # Check if this is a gemma model by path
+    model_path = os.environ.get("LOCAL_MODEL_PATH", "model/gemma-4-E2B-it-Q4_K_M.gguf")
+    is_gemma4 = "gemma" in model_path.lower()
     
-    stop = ["<|im_end|>", "<|im_start|>"]
+    if is_gemma4:
+        # Prompt for Gemma 4 using system and user roles, and ending in the native thought turn
+        formatted_prompt = (
+            f"<|turn|>system\n{sys_prompt}<turn|>\n"
+            f"<|turn|>user\n{prompt}<turn|>\n"
+            f"<|channel>thought\n"
+        )
+        # We do NOT include `<channel|>` or `<|turn|>model` in the stop sequences,
+        # so the model can finish generating thoughts and transition to the model answer turn.
+        # We stop at `<turn|>` (end of model turn) or `<|turn|>` (beginning of next turn).
+        stop = ["<turn|>", "<|turn|>"]
+    else:
+        # Fallback to standard ChatML format (e.g. Qwen)
+        formatted_prompt = (
+            f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        stop = ["<|im_end|>", "<|im_start|>"]
+        
     if stop_sequences:
         for s in stop_sequences:
             if s not in stop:
@@ -236,6 +253,17 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
     )
     
     answer = response["choices"][0]["text"].strip()
+    
+    # Dynamic CoT Isolation: If thoughts were generated, extract only the clean final answer
+    if is_gemma4:
+        if "<|turn|>model\n" in answer:
+            answer = answer.split("<|turn|>model\n")[-1].strip()
+        elif "model\n" in answer:
+            answer = answer.split("model\n")[-1].strip()
+            
+        for tag in ["<turn|>", "<|turn|>", "<channel|>", "<|channel>thought"]:
+            answer = answer.replace(tag, "").strip()
+            
     return answer
 
 def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens, stop_sequences=None, timeout=25, max_retries=3):
