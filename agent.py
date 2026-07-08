@@ -33,51 +33,7 @@ def check_env():
         
     return api_key, base_url, allowed_models
 
-def map_allowed_models(allowed_models):
-    """
-    Maps allowed models to routing categories.
-    If target models are missing, fallback intelligently.
-    """
-    mapping = {
-        "cheap": None,      # gemma-4-26b-a4b-it
-        "mid_dense": None,  # gemma-4-31b-it
-        "mid_quant": None,  # gemma-4-31b-it-nvfp4
-        "code": None,       # kimi-k2p7-code
-        "flagship": None    # minimax-m3
-    }
-    
-    for m in allowed_models:
-        m_lower = m.lower()
-        if "26b" in m_lower or "cheap" in m_lower or "small" in m_lower or "mini" in m_lower:
-            mapping["cheap"] = m
-        elif "nvfp4" in m_lower:
-            mapping["mid_quant"] = m
-        elif "31b" in m_lower or "glm" in m_lower:
-            mapping["mid_dense"] = m
-        elif "kimi" in m_lower or "code" in m_lower:
-            mapping["code"] = m
-        elif "minimax" in m_lower or "m3" in m_lower or "deepseek" in m_lower or "gpt" in m_lower:
-            mapping["flagship"] = m
-            
-    default_model = allowed_models[0]
-    
-    # Resolve fallbacks
-    if not mapping["cheap"]:
-        mapping["cheap"] = next((m for m in allowed_models if "gemma" in m.lower()), default_model)
-        
-    if not mapping["mid_quant"]:
-        mapping["mid_quant"] = mapping["mid_dense"] or next((m for m in allowed_models if "gemma" in m.lower()), default_model)
-        
-    if not mapping["mid_dense"]:
-        mapping["mid_dense"] = mapping["mid_quant"] or next((m for m in allowed_models if "gemma" in m.lower()), default_model)
-        
-    if not mapping["code"]:
-        mapping["code"] = next((m for m in allowed_models if "kimi" in m.lower() or "code" in m.lower()), default_model)
-        
-    if not mapping["flagship"]:
-        mapping["flagship"] = next((m for m in allowed_models if "minimax" in m.lower() or "m3" in m.lower() or "deepseek" in m_lower or "gpt" in m_lower), default_model)
-        
-    return mapping
+from src.router import map_allowed_models
 
 def clean_prompt(prompt):
     """
@@ -301,20 +257,28 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
         
     # Append instructions to the end of the user prompt to force compliance
     user_prompt = f"{prompt}\n\n{sys_prompt}"
-        
-    try:
-        answer = request_with_retry(user_prompt, sys_prompt, primary_model, api_key, base_url, max_tokens)
-        return {"task_id": task_id, "answer": answer}
-    except Exception as e:
-        sys.stderr.write(f"Primary model {primary_model} failed for task {task_id} ({category}): {e}. Trying backup model...\n")
-        sys.stderr.flush()
+    
+    # Establish a dynamic, ordered fallback list of models to try (Defense B: Sequential degradation)
+    candidates = [primary_model]
+    if backup_model not in candidates:
+        candidates.append(backup_model)
+    for m in allowed_models:
+        if m not in candidates:
+            candidates.append(m)
+            
+    last_err = None
+    for model in candidates:
         try:
-            answer = request_with_retry(user_prompt, sys_prompt, backup_model, api_key, base_url, max_tokens)
+            answer = request_with_retry(user_prompt, sys_prompt, model, api_key, base_url, max_tokens)
             return {"task_id": task_id, "answer": answer}
-        except Exception as e2:
-            sys.stderr.write(f"Backup model {backup_model} failed for task {task_id}: {e2}. Using fallback answer.\n")
+        except Exception as e:
+            sys.stderr.write(f"Model {model} failed for task {task_id} ({category}): {e}. Trying next fallback candidate...\n")
             sys.stderr.flush()
-            return {"task_id": task_id, "answer": "Failed to generate answer due to upstream error."}
+            last_err = e
+            
+    sys.stderr.write(f"All available models failed for task {task_id}. Using fallback answer. Last error: {last_err}\n")
+    sys.stderr.flush()
+    return {"task_id": task_id, "answer": "Failed to generate answer due to upstream error."}
 
 def write_results_atomic(results, output_path):
     output_dir = os.path.dirname(output_path)

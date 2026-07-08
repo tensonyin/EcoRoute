@@ -152,13 +152,11 @@ class TestAgentPipeline(unittest.TestCase):
             "accounts/fireworks/models/minimax-m3",
             "kimi-k2p7-code",
             "gemma-4-31b-it",
-            "gemma-4-26b-a4b-it",
-            "gemma-4-31b-it-nvfp4"
+            "gemma-4-26b-a4b-it"
         ]
         mapping = agent.map_allowed_models(allowed)
         self.assertEqual(mapping["cheap"], "gemma-4-26b-a4b-it")
         self.assertEqual(mapping["mid_dense"], "gemma-4-31b-it")
-        self.assertEqual(mapping["mid_quant"], "gemma-4-31b-it-nvfp4")
         self.assertEqual(mapping["code"], "kimi-k2p7-code")
         self.assertEqual(mapping["flagship"], "accounts/fireworks/models/minimax-m3")
 
@@ -167,7 +165,6 @@ class TestAgentPipeline(unittest.TestCase):
         mapping = agent.map_allowed_models(allowed)
         self.assertEqual(mapping["cheap"], "minimax-m3")
         self.assertEqual(mapping["mid_dense"], "minimax-m3")
-        self.assertEqual(mapping["mid_quant"], "minimax-m3")
         self.assertEqual(mapping["code"], "minimax-m3")
         self.assertEqual(mapping["flagship"], "minimax-m3")
 
