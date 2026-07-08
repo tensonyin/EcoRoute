@@ -109,7 +109,7 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", 1024, None
+        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", None, None
         
     # 8. Code Generation
     if re.search(r'\b(write|create|implement|generate|code|program|script|function|class)\b.*\b(code|python|c\+\+|javascript|java|rust|go|html|css)\b', prompt_lower) or "write a function" in prompt_lower:
@@ -117,18 +117,18 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_generation", f"Output only code.{sys_code_suffix}", "code", 1024, None
+        return "code_generation", f"Output only code.{sys_code_suffix}", "code", None, None
         
     # 7. Logic Puzzles
     if re.search(r'\b(logic|puzzle|deduce|deduction|reasoning|riddle|constraint|grid puzzle|truth-teller|liar)\b', prompt_lower) or "if " in prompt_lower:
-        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", 1024, None
+        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", None, None
         
     # 2. Mathematical Reasoning
     if re.search(r'\b(solve|calculate|compute|equation|algebra|arithmetic|percentage|probability|ratio|sum|product|difference|fraction)\b', prompt_lower) or "math" in prompt_lower:
-        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", 1024, None
+        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", None, None
         
     # 1. Factual Q&A / Fallback
-    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", 1024, None
+    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", None, None
 
 def stream_tasks(file_path):
     """
@@ -232,7 +232,7 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
         # We stop at `<turn|>` (end of model turn) or `<|turn|>` (beginning of next turn).
         stop = ["<turn|>", "<|turn|>"]
         # Use a larger max_tokens locally to allow reasoning to finish (0 Fireworks tokens)
-        local_max_tokens = max(max_tokens, 512)
+        local_max_tokens = max(max_tokens or 0, 512)
     else:
         # Fallback to standard ChatML format (e.g. Qwen)
         formatted_prompt = (
@@ -241,7 +241,7 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
             f"<|im_start|>assistant\n"
         )
         stop = ["<|im_end|>", "<|im_start|>"]
-        local_max_tokens = max_tokens
+        local_max_tokens = max_tokens or 512
         
     if not is_gemma4 and stop_sequences:
         for s in stop_sequences:
@@ -287,9 +287,10 @@ def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens,
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.0,
-            "max_tokens": max_tokens
+            "temperature": 0.0
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if stop_sequences:
             payload["stop"] = stop_sequences
             
@@ -345,6 +346,7 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
         # High difficulty (online flagship models)
         sys_prompt = (
             "You are an elite automated agent. Answer the user request directly, comprehensively, and correctly. "
+            "Respond using the absolute minimum tokens possible. Be extremely concise. "
             "Do NOT output any internal thoughts, markdown notes, or opening text like 'The user wants...'."
         )
         user_prompt = prompt
