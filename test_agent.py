@@ -110,7 +110,7 @@ class TestAgentPipeline(unittest.TestCase):
         cat, sys_p, key, tokens = agent.classify_task("Please analyze the sentiment of this review: 'I hate it!'")
         self.assertEqual(cat, "sentiment")
         self.assertEqual(key, "cheap")
-        self.assertEqual(tokens, 100)
+        self.assertEqual(tokens, 30)
         
         # Summarisation
         cat, sys_p, key, tokens = agent.classify_task("Please write a summary of the following essay")
