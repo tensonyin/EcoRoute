@@ -107,43 +107,44 @@ class TestAgentPipeline(unittest.TestCase):
 
     def test_classify_task(self):
         # Sentiment
-        cat, sys_p, key, tokens = agent.classify_task("Please analyze the sentiment of this review: 'I hate it!'")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Please analyze the sentiment of this review: 'I hate it!'")
         self.assertEqual(cat, "sentiment")
         self.assertEqual(key, "cheap")
-        self.assertEqual(tokens, 30)
+        self.assertEqual(tokens, 15)
+        self.assertIsNotNone(stops)
         
         # Summarisation
-        cat, sys_p, key, tokens = agent.classify_task("Please write a summary of the following essay")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Please write a summary of the following essay")
         self.assertEqual(cat, "summarisation")
         self.assertEqual(key, "cheap")
         
         # NER
-        cat, sys_p, key, tokens = agent.classify_task("Identify all organization entities in this sentence")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Identify all organization entities in this sentence")
         self.assertEqual(cat, "ner")
         self.assertEqual(key, "cheap")
         
         # Code generation
-        cat, sys_p, key, tokens = agent.classify_task("Write a python function to compute fibonacci numbers")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Write a python function to compute fibonacci numbers")
         self.assertEqual(cat, "code_generation")
         self.assertEqual(key, "code")
         
         # Code debug
-        cat, sys_p, key, tokens = agent.classify_task("Fix the syntax error in the code below")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Fix the syntax error in the code below")
         self.assertEqual(cat, "code_debug")
         self.assertEqual(key, "code")
         
         # Math
-        cat, sys_p, key, tokens = agent.classify_task("Calculate the probability of flipping two heads")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Calculate the probability of flipping two heads")
         self.assertEqual(cat, "math_reasoning")
         self.assertEqual(key, "mid_dense")
         
         # Logic
-        cat, sys_p, key, tokens = agent.classify_task("Solve this logic puzzle: if Alice is telling the truth...")
+        cat, sys_p, key, tokens, stops = agent.classify_task("Solve this logic puzzle: if Alice is telling the truth...")
         self.assertEqual(cat, "logic_puzzles")
         self.assertEqual(key, "mid_dense")
         
         # Factual QA
-        cat, sys_p, key, tokens = agent.classify_task("What is the capital of France?")
+        cat, sys_p, key, tokens, stops = agent.classify_task("What is the capital of France?")
         self.assertEqual(cat, "factual_qa")
         self.assertEqual(key, "flagship")
 

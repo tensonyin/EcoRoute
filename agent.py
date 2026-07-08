@@ -76,7 +76,7 @@ def clean_prompt(prompt):
 def classify_task(prompt):
     """
     Heuristic task classification and routing.
-    Returns: category, system_prompt, target_model_key, max_tokens
+    Returns: category, system_prompt, target_model_key, max_tokens, stop_sequences
     """
     prompt_lower = prompt.lower()
     
@@ -88,17 +88,20 @@ def classify_task(prompt):
         "Output the final answer directly."
     )
     
+    # Stop sequences to block preamble / CoT leaking
+    common_stops = ["We need to", "The text:", "Something like", "Entities:", "\n\n"]
+    
     # 3. Sentiment Classification
     if re.search(r'\b(sentiment|positive|negative|neutral|classify the tone|review tone|emotional tone|emotion)\b', prompt_lower) or "sentiment" in prompt_lower:
-        return "sentiment", f"Sentiment: label + brief justification.{strict_suffix}", "cheap", 30
+        return "sentiment", f"Sentiment: label + brief justification.{strict_suffix}", "cheap", 15, common_stops
         
     # 4. Text Summarisation
     if re.search(r'\b(summarize|summary|summarise|condensation|condense|abstract|tl;dr|tldr)\b', prompt_lower):
-        return "summarisation", f"Summarize text concisely.{strict_suffix}", "cheap", 100
+        return "summarisation", f"Summarize text concisely.{strict_suffix}", "cheap", 100, common_stops
         
     # 5. Named Entity Recognition (NER)
     if re.search(r'\b(extract|identify|find)\b.*\b(entities|entity|names|person|org|location|date|places|organizations)\b', prompt_lower) or "ner" in prompt_lower or "entity recognition" in prompt_lower:
-        return "ner", f"Extract entities (Person,Org,Loc,Date).{strict_suffix}", "cheap", 100
+        return "ner", f"Extract entities (Person,Org,Loc,Date).{strict_suffix}", "cheap", 100, common_stops
         
     # 6. Code Debugging
     if re.search(r'\b(bug|debug|fix|correct|troubleshoot|syntax error|runtime error|exception)\b.*\b(code|python|function|c\+\+|javascript|java|implementation)\b', prompt_lower) or "correct the implementation" in prompt_lower:
@@ -106,7 +109,7 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", 512
+        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", 512, None
         
     # 8. Code Generation
     if re.search(r'\b(write|create|implement|generate|code|program|script|function|class)\b.*\b(code|python|c\+\+|javascript|java|rust|go|html|css)\b', prompt_lower) or "write a function" in prompt_lower:
@@ -114,18 +117,18 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_generation", f"Output only code.{sys_code_suffix}", "code", 512
+        return "code_generation", f"Output only code.{sys_code_suffix}", "code", 512, None
         
     # 7. Logic Puzzles
     if re.search(r'\b(logic|puzzle|deduce|deduction|reasoning|riddle|constraint|grid puzzle|truth-teller|liar)\b', prompt_lower) or "if " in prompt_lower:
-        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", 256
+        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", 256, None
         
     # 2. Mathematical Reasoning
     if re.search(r'\b(solve|calculate|compute|equation|algebra|arithmetic|percentage|probability|ratio|sum|product|difference|fraction)\b', prompt_lower) or "math" in prompt_lower:
-        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", 100
+        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", 100, None
         
     # 1. Factual Q&A / Fallback
-    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", 200
+    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", 200, None
 
 def stream_tasks(file_path):
     """
@@ -179,14 +182,12 @@ def stream_tasks(file_path):
                                 sys.stderr.write(f"WARNING: Failed to parse task JSON: {parse_err}\n")
                             buffer = []
 
-def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens, timeout=25, max_retries=3):
+def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens, stop_sequences=None, timeout=25, max_retries=3):
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    
-    use_reasoning_effort = True
     
     backoff = 1.0
     attempt = 0
@@ -200,11 +201,11 @@ def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens,
             "temperature": 0.0,
             "max_tokens": max_tokens
         }
-        if use_reasoning_effort:
-            payload["reasoning_effort"] = "none"
+        if stop_sequences:
+            payload["stop"] = stop_sequences
             
         try:
-            sys.stderr.write(f"Sending request to {model} (Attempt {attempt+1}/{max_retries}, reasoning_effort={use_reasoning_effort})...\n")
+            sys.stderr.write(f"Sending request to {model} (Attempt {attempt+1}/{max_retries})...\n")
             sys.stderr.flush()
             response = requests.post(url, headers=headers, json=payload, timeout=timeout)
             
@@ -218,14 +219,6 @@ def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens,
                 if content is None:
                     content = ""
                 return content
-            elif response.status_code == 400:
-                if use_reasoning_effort:
-                    sys.stderr.write("Model does not support reasoning_effort. Retrying without it...\n")
-                    sys.stderr.flush()
-                    use_reasoning_effort = False
-                    continue
-                else:
-                    response.raise_for_status()
             elif response.status_code == 429:
                 sys.stderr.write(f"Rate limited (429) on model {model}. Retrying in {backoff}s...\n")
             elif response.status_code >= 500:
@@ -247,7 +240,7 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
     task_id = task["task_id"]
     prompt = clean_prompt(task["prompt"])
     
-    category, sys_prompt, target_key, max_tokens = classify_task(prompt)
+    category, sys_prompt, target_key, max_tokens, stop_sequences = classify_task(prompt)
     
     primary_model = model_mapping[target_key]
     backup_model = model_mapping["flagship"] or allowed_models[0]
@@ -255,8 +248,8 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
     if primary_model == backup_model and len(allowed_models) > 1:
         backup_model = next((m for m in allowed_models if m != primary_model), allowed_models[0])
         
-    # Append instructions to the end of the user prompt to force compliance
-    user_prompt = f"{prompt}\n\n{sys_prompt}"
+    # Structured formatting to guide models to output direct answer immediately
+    user_prompt = f"Task: {prompt}\nFormat: Result only.\nAnswer:"
     
     # Establish a dynamic, ordered fallback list of models to try (Defense B: Sequential degradation)
     candidates = [primary_model]
@@ -269,7 +262,7 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
     last_err = None
     for model in candidates:
         try:
-            answer = request_with_retry(user_prompt, sys_prompt, model, api_key, base_url, max_tokens)
+            answer = request_with_retry(user_prompt, sys_prompt, model, api_key, base_url, max_tokens, stop_sequences)
             return {"task_id": task_id, "answer": answer}
         except Exception as e:
             sys.stderr.write(f"Model {model} failed for task {task_id} ({category}): {e}. Trying next fallback candidate...\n")
