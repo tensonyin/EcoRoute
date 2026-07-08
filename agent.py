@@ -180,7 +180,63 @@ def stream_tasks(file_path):
                                     sys.stderr.write(f"WARNING: Skipping invalid task format: {obj_str[:100]}...\n")
                             except Exception as parse_err:
                                 sys.stderr.write(f"WARNING: Failed to parse task JSON: {parse_err}\n")
-                            buffer = []
+llm = None
+
+def get_local_model():
+    global llm
+    if llm is not None:
+        return llm
+        
+    model_path = os.environ.get("LOCAL_MODEL_PATH", "model/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+    if not os.path.exists(model_path):
+        sys.stderr.write(f"Local model not found at {model_path}. Fallback to Fireworks.\n")
+        sys.stderr.flush()
+        return None
+        
+    try:
+        from llama_cpp import Llama
+        sys.stderr.write(f"Loading local model from {model_path}...\n")
+        sys.stderr.flush()
+        llm = Llama(
+            model_path=model_path,
+            n_ctx=2048,
+            n_threads=2,
+            verbose=False
+        )
+        sys.stderr.write("Local model loaded successfully!\n")
+        sys.stderr.flush()
+        return llm
+    except Exception as e:
+        sys.stderr.write(f"Failed to load local model: {e}\n")
+        sys.stderr.flush()
+        return None
+
+def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
+    local_llm = get_local_model()
+    if local_llm is None:
+        raise RuntimeError("Local model is not available")
+        
+    formatted_prompt = (
+        f"<|im_start|>system\n{sys_prompt}<|im_end|>\n"
+        f"<|im_start|>user\n{prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+    
+    stop = ["<|im_end|>", "<|im_start|>"]
+    if stop_sequences:
+        for s in stop_sequences:
+            if s not in stop:
+                stop.append(s)
+                
+    response = local_llm(
+        formatted_prompt,
+        max_tokens=max_tokens,
+        stop=stop,
+        temperature=0.0
+    )
+    
+    answer = response["choices"][0]["text"].strip()
+    return answer
 
 def request_with_retry(prompt, sys_prompt, model, api_key, base_url, max_tokens, stop_sequences=None, timeout=25, max_retries=3):
     url = f"{base_url.rstrip('/')}/chat/completions"
@@ -251,6 +307,18 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
     # Structured formatting to guide models to output direct answer immediately
     user_prompt = f"Task: {prompt}\nFormat: Result only.\nAnswer:"
     
+    # Try querying the local model first if category is local (0 Fireworks tokens)
+    from src.router import should_route_local
+    if should_route_local(category):
+        try:
+            sys.stderr.write(f"Routing task {task_id} ({category}) locally to save Fireworks tokens...\n")
+            sys.stderr.flush()
+            answer = query_local_model(user_prompt, sys_prompt, max_tokens, stop_sequences)
+            return {"task_id": task_id, "answer": answer}
+        except Exception as e:
+            sys.stderr.write(f"Local model execution failed for task {task_id} ({category}): {e}. Falling back to Fireworks AI...\n")
+            sys.stderr.flush()
+            
     # Establish a dynamic, ordered fallback list of models to try (Defense B: Sequential degradation)
     candidates = [primary_model]
     if backup_model not in candidates:

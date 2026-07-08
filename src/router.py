@@ -67,3 +67,12 @@ def map_allowed_models(allowed_models):
         mapping["flagship"] = default_model
         
     return mapping
+
+def should_route_local(category):
+    """
+    Decides in real-time if a task should be processed locally
+    to save Fireworks token cost (0 Fireworks tokens).
+    Currently routes Sentiment, Summarisation, and NER locally.
+    """
+    # Simple, highly-accurate NLP tasks can be solved by local 1.5B model
+    return category in ["sentiment", "summarisation", "ner"]
