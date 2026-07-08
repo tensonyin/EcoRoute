@@ -109,7 +109,7 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", 512, None
+        return "code_debug", f"Output only corrected code.{sys_code_suffix}", "code", 1024, None
         
     # 8. Code Generation
     if re.search(r'\b(write|create|implement|generate|code|program|script|function|class)\b.*\b(code|python|c\+\+|javascript|java|rust|go|html|css)\b', prompt_lower) or "write a function" in prompt_lower:
@@ -117,18 +117,18 @@ def classify_task(prompt):
             " CRITICAL: Output ONLY the raw executable code. "
             "Do NOT include markdown backticks (like ```python) or any explanations."
         )
-        return "code_generation", f"Output only code.{sys_code_suffix}", "code", 512, None
+        return "code_generation", f"Output only code.{sys_code_suffix}", "code", 1024, None
         
     # 7. Logic Puzzles
     if re.search(r'\b(logic|puzzle|deduce|deduction|reasoning|riddle|constraint|grid puzzle|truth-teller|liar)\b', prompt_lower) or "if " in prompt_lower:
-        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", 256, None
+        return "logic_puzzles", f"Solve logic puzzle concisely.{strict_suffix}", "mid_dense", 1024, None
         
     # 2. Mathematical Reasoning
     if re.search(r'\b(solve|calculate|compute|equation|algebra|arithmetic|percentage|probability|ratio|sum|product|difference|fraction)\b', prompt_lower) or "math" in prompt_lower:
-        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", 100, None
+        return "math_reasoning", f"Solve math concisely. Output only the final key results.{strict_suffix}", "mid_dense", 1024, None
         
     # 1. Factual Q&A / Fallback
-    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", 200, None
+    return "factual_qa", f"Direct factual answer only.{strict_suffix}", "flagship", 1024, None
 
 def stream_tasks(file_path):
     """
@@ -231,6 +231,8 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
         # so the model can finish generating thoughts and transition to the model answer turn.
         # We stop at `<turn|>` (end of model turn) or `<|turn|>` (beginning of next turn).
         stop = ["<turn|>", "<|turn|>"]
+        # Use a larger max_tokens locally to allow reasoning to finish (0 Fireworks tokens)
+        local_max_tokens = max(max_tokens, 512)
     else:
         # Fallback to standard ChatML format (e.g. Qwen)
         formatted_prompt = (
@@ -239,15 +241,16 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
             f"<|im_start|>assistant\n"
         )
         stop = ["<|im_end|>", "<|im_start|>"]
+        local_max_tokens = max_tokens
         
-    if stop_sequences:
+    if not is_gemma4 and stop_sequences:
         for s in stop_sequences:
             if s not in stop:
                 stop.append(s)
                 
     response = local_llm(
         formatted_prompt,
-        max_tokens=max_tokens,
+        max_tokens=local_max_tokens,
         stop=stop,
         temperature=0.0
     )
@@ -256,7 +259,9 @@ def query_local_model(prompt, sys_prompt, max_tokens, stop_sequences=None):
     
     # Dynamic CoT Isolation: If thoughts were generated, extract only the clean final answer
     if is_gemma4:
-        if "<|turn|>model\n" in answer:
+        if "<channel|>" in answer:
+            answer = answer.split("<channel|>")[-1].strip()
+        elif "<|turn|>model\n" in answer:
             answer = answer.split("<|turn|>model\n")[-1].strip()
         elif "model\n" in answer:
             answer = answer.split("model\n")[-1].strip()
@@ -332,8 +337,17 @@ def process_task(task, api_key, base_url, model_mapping, allowed_models):
     if primary_model == backup_model and len(allowed_models) > 1:
         backup_model = next((m for m in allowed_models if m != primary_model), allowed_models[0])
         
-    # Structured formatting to guide models to output direct answer immediately
-    user_prompt = f"Task: {prompt}\nFormat: Result only.\nAnswer:"
+    # Dual-Track Prompt Directive Isolation:
+    if category in ["sentiment", "summarisation", "ner"]:
+        # Low difficulty (local Gemma 4 / cheap models)
+        user_prompt = f"Task: {prompt}\nFormat: Result only.\nAnswer:"
+    else:
+        # High difficulty (online flagship models)
+        sys_prompt = (
+            "You are an elite automated agent. Answer the user request directly, comprehensively, and correctly. "
+            "Do NOT output any internal thoughts, markdown notes, or opening text like 'The user wants...'."
+        )
+        user_prompt = prompt
     
     # Try querying the local model first if category is local (0 Fireworks tokens)
     from src.router import should_route_local
